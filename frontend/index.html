@@ -6,7 +6,7 @@
 <title>实体键桥</title>
 <script src="/static/vue.global.prod.js"></script>
 <style>
-  :root{--bg:#1a1a1a;--panel:#111;--line:#333;--text:#f2f2f2;--muted:#9a9a9a;--accent:#ff7a18;--ok:#7CFC00;--bad:#ff4d4d}
+  :root{--bg:#1a1a1a;--panel:#111;--line:#333;--text:#f2f2f2;--muted:#9a9a9a;--accent:#ff7a18;--ok:#7CFC00;--bad:#ff4d4d;--warn:#ffd166}
   *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:"Segoe UI","PingFang SC",sans-serif}
   .top{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;background:#0d0d0d}
   .top h1{margin:0;font-size:20px;letter-spacing:.04em}
@@ -18,17 +18,22 @@
   .box{border:1px solid var(--line);background:var(--panel);padding:12px;margin-bottom:12px}
   .box h2{margin:0 0 10px;font-size:13px;color:var(--muted);font-weight:700;letter-spacing:.08em;text-transform:uppercase}
   table{width:100%;border-collapse:collapse;font-size:12px;font-family:Consolas,monospace}
-  th,td{padding:8px 4px;border-bottom:1px solid #2a2a2a;text-align:left}
+  th,td{padding:8px 4px;border-bottom:1px solid #2a2a2a;text-align:left;vertical-align:top}
   input{width:100%;background:#000;border:1px solid #444;color:#fff;padding:10px;font-family:Consolas,monospace;margin:6px 0 10px}
   .primary{background:var(--accent);color:#111;border:0;padding:10px 12px;font-weight:700;cursor:pointer;width:100%}
   .ghost{background:transparent;border:1px solid #666;color:#ddd;padding:6px 8px;cursor:pointer}
   .login{max-width:420px;margin:14vh auto;background:#111;border:1px solid #333;padding:22px}
   .err{color:var(--bad);min-height:18px;font-size:12px}
   .pill{border:1px solid #444;padding:2px 6px;font-size:11px;color:var(--muted)}
-  .ok{color:var(--ok)}.bad{color:var(--bad)}
-  .tabs{display:flex;gap:8px;margin-bottom:10px}
+  .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}
+  .tabs{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
   .tabs button{background:#000;border:1px solid #333;color:#aaa;padding:6px 8px;cursor:pointer}
   .tabs button.on{border-color:var(--accent);color:var(--accent)}
+  .checks{font-size:12px;font-family:Consolas,monospace;line-height:1.7}
+  .banner{border:1px solid #444;padding:8px 10px;margin-bottom:12px;font-size:12px}
+  .banner.good{border-color:#2f6b2f;color:var(--ok)}
+  .banner.poor{border-color:#6b2f2f;color:var(--bad)}
+  .muted{color:var(--muted)}
 </style>
 </head>
 <body>
@@ -45,15 +50,18 @@ setTimeout(function () {
 </script>
 
 <script>
-const {createApp,ref,onMounted}=Vue;
+const {createApp,ref,computed,onMounted}=Vue;
 createApp({
   setup(){
     const token=ref(localStorage.getItem('keyremap_token')||'');
     const user=ref(localStorage.getItem('keyremap_user')||'');
     const username=ref('admin'), password=ref('123456'), err=ref(''), actionErr=ref('');
     const leftTab=ref(0), rightTab=ref(0);
-    const versions=ref([]), mappings=ref([]), formal=ref([]), conflicts=ref([]);
-    const oldKey=ref('OLD-B1');
+    const versions=ref([]), mappings=ref([]), ingress=ref([]), formal=ref([]), conflicts=ref([]),
+          contention=ref([]), mutual=ref(null), proofs=ref([]);
+    const oldKey=ref('OLD-B1'), proofQuery=ref(''), proofHit=ref(null), proofErr=ref('');
+    const remapMode=ref('甲-同事务');
+    const mode=computed(()=>mutual.value?mutual.value.mode:remapMode.value);
     function auth(){return {Authorization:'Bearer '+token.value,'Content-Type':'application/json'};}
     async function login(){
       err.value='';
@@ -70,25 +78,49 @@ createApp({
       if(r.status===401){ logout(); return null; }
       return j;
     }
+    function take(j, key){
+      if(j===null) return false;
+      const v=j[key]; return Array.isArray(v)?v:[];
+    }
     async function refresh(){
       if(!token.value) return;
-      const v=await loadJson('/api/map-versions'); if(v===null) return;
-      versions.value=Array.isArray(v.items)?v.items:[];
-      const m=await loadJson('/api/mappings'); if(m===null) return;
-      mappings.value=Array.isArray(m.items)?m.items:[];
-      const f=await loadJson('/api/formal'); if(f===null) return;
-      formal.value=Array.isArray(f.items)?f.items:[];
-      const c=await loadJson('/api/conflicts'); if(c===null) return;
-      conflicts.value=Array.isArray(c.items)?c.items:[];
+      const v=await loadJson('/api/map-versions'); if(v===null) return; versions.value=take(v,'items');
+      const m=await loadJson('/api/mappings'); if(m===null) return; mappings.value=take(m,'items');
+      const i=await loadJson('/api/ingress'); if(i===null) return; ingress.value=take(i,'items');
+      const f=await loadJson('/api/formal'); if(f===null) return; formal.value=take(f,'items');
+      const c=await loadJson('/api/conflicts'); if(c===null) return; conflicts.value=take(c,'items');
+      const t=await loadJson('/api/remap-contention'); if(t===null) return; contention.value=take(t,'items');
+      const p=await loadJson('/api/remap-proofs'); if(p===null) return; proofs.value=take(p,'items');
+      const active=versions.value.find(x=>x.status==='生效');
+      if(active){
+        const mu=await loadJson('/api/map-versions/'+encodeURIComponent(active.version)+'/mutual-proof');
+        if(mu!==null) mutual.value=mu;
+      }
+      const hp=await loadJson('/api/health');
+      if(hp && hp.remap_mode) remapMode.value=hp.remap_mode;
     }
     async function doRemap(){
       actionErr.value='';
       const r=await fetch('/api/remap',{method:'POST',headers:auth(),body:JSON.stringify({old_key:oldKey.value})});
-      const j=await r.json(); actionErr.value=r.ok?('正式键 '+j.entity_key):(j.detail||'失败');
+      const j=await r.json().catch(()=>({}));
+      actionErr.value=r.ok
+        ? ('落成 '+j.entity_key+' · 凭证 '+j.proof_id+' · 入站残留 '+j.ingress_remaining)
+        : (j.detail||'失败');
       await refresh();
     }
+    async function lookupProof(){
+      proofErr.value=''; proofHit.value=null;
+      const q=(proofQuery.value||'').trim(); if(!q){proofErr.value='请输入 proof_id 或 old_key';return;}
+      let j=await loadJson('/api/remap-proofs/'+encodeURIComponent(q));
+      if(j && !j.detail) { proofHit.value=j; return; }
+      j=await loadJson('/api/remap-proofs?old_key='+encodeURIComponent(q));
+      if(j && Array.isArray(j.items) && j.items.length){ proofHit.value=j.items[0]; return; }
+      proofErr.value='未找到该凭证';
+    }
     onMounted(()=>{if(token.value)refresh();});
-    return {token,user,username,password,err,actionErr,leftTab,rightTab,versions,mappings,formal,conflicts,oldKey,login,logout,doRemap};
+    return {token,user,username,password,err,actionErr,leftTab,rightTab,versions,mappings,ingress,formal,
+      conflicts,contention,mutual,proofs,oldKey,proofQuery,proofHit,proofErr,mode,remapMode,
+      login,logout,doRemap,lookupProof};
   },
   template:`
   <div v-if="!token" class="login">
@@ -99,46 +131,90 @@ createApp({
   </div>
   <div v-if="token">
     <div class="top">
-      <h1>实体键<em>桥</em> <span class="pill">旧键 → 正式键</span></h1>
+      <h1>实体键<em>桥</em> <span class="pill">旧键 → 正式键</span> <span class="pill">口径 {{mode}}</span></h1>
       <div>{{user}} <button class="ghost" @click="logout">退出</button></div>
     </div>
     <div class="split">
       <div class="pane">
         <div class="tabs">
-          <button :class="{on:leftTab===0}" @click="leftTab=0">映射版本</button>
-          <button :class="{on:leftTab===1}" @click="leftTab=1">执行重映</button>
+          <button :class="{on:leftTab===0}" @click="leftTab=0">映射版本/映射册</button>
+          <button :class="{on:leftTab===1}" @click="leftTab=1">入站列表</button>
+          <button :class="{on:leftTab===2}" @click="leftTab=2">执行重映</button>
         </div>
         <div class="box" v-show="leftTab===0">
           <h2>Map Versions</h2>
           <table><thead><tr><th>version</th><th>status</th><th>from</th></tr></thead>
           <tbody><tr v-for="v in versions" :key="v.id"><td>{{v.version}}</td><td>{{v.status}}</td><td>{{v.effective_from}}</td></tr></tbody></table>
-          <h2 style="margin-top:14px">Mappings</h2>
-          <table><thead><tr><th>old</th><th>new</th><th>kind</th></tr></thead>
-          <tbody><tr v-for="m in mappings" :key="m.id"><td>{{m.old_key}}</td><td class="ok">{{m.new_key}}</td><td>{{m.kind}}</td></tr></tbody></table>
+          <h2 style="margin-top:14px">Mappings · 映射册</h2>
+          <table><thead><tr><th>version</th><th>old</th><th>new</th><th>kind</th></tr></thead>
+          <tbody><tr v-for="m in mappings" :key="m.id"><td class="muted">{{m.version}}</td><td>{{m.old_key}}</td><td class="ok">{{m.new_key}}</td><td>{{m.kind}}</td></tr></tbody></table>
         </div>
         <div class="box" v-show="leftTab===1">
-          <h2>Ingress Remap</h2>
+          <h2>Ingress · 入站待重映</h2>
+          <table><thead><tr><th>old_key</th><th>拟落 new</th><th>kind</th><th>来源</th><th>收到</th></tr></thead>
+          <tbody><tr v-for="i in ingress" :key="i.id"><td>{{i.old_key}}</td><td class="ok">{{i.new_key||'—'}}</td><td>{{i.kind||'无映射'}}</td><td class="muted">{{i.source}}</td><td class="muted">{{i.received_at}}</td></tr></tbody></table>
+          <p class="muted" style="font-size:12px;margin:8px 0 0">旧键一旦重映落成即从此表删除；回灌同键会被库级约束拒绝。</p>
+        </div>
+        <div class="box" v-show="leftTab===2">
+          <h2>Ingress Remap · 单键重映</h2>
           <label>old_key</label>
           <input v-model="oldKey"/>
           <button class="primary" @click="doRemap">重映入正式区</button>
           <div class="err">{{actionErr}}</div>
+          <p class="muted" style="font-size:12px">同事务口径：删入站与插正式同败同成；重复/并发点同一旧键仅一个胜出，其余留争用登记。</p>
         </div>
       </div>
       <div class="bridge"></div>
       <div class="pane">
         <div class="tabs">
           <button :class="{on:rightTab===0}" @click="rightTab=0">正式区</button>
-          <button :class="{on:rightTab===1}" @click="rightTab=1">冲突队列</button>
+          <button :class="{on:rightTab===1}" @click="rightTab=1">冲突/争用</button>
+          <button :class="{on:rightTab===2}" @click="rightTab=2">互证/凭证</button>
         </div>
         <div class="box" v-show="rightTab===0">
           <h2>Formal Zone</h2>
-          <table><thead><tr><th>entity</th><th>from</th><th>ver</th><th>at</th></tr></thead>
-          <tbody><tr v-for="f in formal" :key="f.id"><td class="ok">{{f.entity_key}}</td><td>{{f.mapped_from}}</td><td>{{f.version}}</td><td>{{f.created_at}}</td></tr></tbody></table>
+          <table><thead><tr><th>id</th><th>entity</th><th>from</th><th>ver</th><th>at</th></tr></thead>
+          <tbody><tr v-for="f in formal" :key="f.id"><td class="muted">{{f.id}}</td><td class="ok">{{f.entity_key}}</td><td>{{f.mapped_from}}</td><td>{{f.version}}</td><td class="muted">{{f.created_at}}</td></tr></tbody></table>
         </div>
         <div class="box" v-show="rightTab===1">
           <h2>Conflicts</h2>
           <table><thead><tr><th>old</th><th>reason</th><th>status</th></tr></thead>
           <tbody><tr v-for="c in conflicts" :key="c.id"><td class="bad">{{c.old_key}}</td><td>{{c.reason}}</td><td>{{c.status}}</td></tr></tbody></table>
+          <h2 style="margin-top:14px">Contention · 争用登记</h2>
+          <table><thead><tr><th>old</th><th>ver</th><th>at</th><th>胜出凭证</th><th>说明</th></tr></thead>
+          <tbody><tr v-for="t in contention" :key="t.id"><td class="warn">{{t.old_key}}</td><td>{{t.map_version}}</td><td class="muted">{{t.at}}</td><td>{{t.winner_proof_id||'—'}}</td><td class="muted">{{t.detail}}</td></tr></tbody></table>
+        </div>
+        <div class="box" v-show="rightTab===2">
+          <h2>Mutual Proof · 版级互证</h2>
+          <div v-if="mutual" class="banner" :class="mutual.verified?'good':'poor'">
+            {{mutual.version}} · {{mutual.verified?'互证闭合':'互证未闭合'}} ·
+            映射 {{mutual.counts.mappings}} / 正式 {{mutual.counts.formal}} / 凭证 {{mutual.counts.proofs}} /
+            入站待重映 {{mutual.counts.ingress_pending}} / 冲突 {{mutual.counts.conflicts}} / 争用 {{mutual.counts.contention}}
+          </div>
+          <div v-if="mutual" class="checks">
+            <div v-for="k in mutual.checks" :key="k.name">
+              <span :class="k.ok?'ok':'bad'">{{k.ok?'✔':'✘'}}</span> {{k.name}}
+              <span class="muted">（{{k.detail}}）</span>
+            </div>
+          </div>
+          <h2 style="margin-top:14px">Remap Proof · 只读核证</h2>
+          <label>proof_id 或 old_key</label>
+          <input v-model="proofQuery" placeholder="rp-... / OLD-B1"/>
+          <button class="ghost" style="width:100%" @click="lookupProof">核证</button>
+          <div class="err">{{proofErr}}</div>
+          <div v-if="proofHit" class="checks">
+            <div>proof_id <span class="ok">{{proofHit.proof_id}}</span></div>
+            <div>old → new <span class="muted">{{proofHit.old_key}} → {{proofHit.new_key}}</span></div>
+            <div>map_version <span class="muted">{{proofHit.map_version}}</span> · at <span class="muted">{{proofHit.at}}</span></div>
+            <div>formal_ids <span class="muted">{{proofHit.formal_ids.join(', ')}}</span></div>
+            <div>ingress_rows <span :class="proofHit.ingress_rows?'bad':'ok'">{{proofHit.ingress_rows}}</span></div>
+            <div v-for="(val,name) in proofHit.checks" :key="name">
+              <span :class="val?'ok':'bad'">{{val?'✔':'✘'}}</span> {{name}}
+            </div>
+          </div>
+          <h2 style="margin-top:14px">凭证清单</h2>
+          <table><thead><tr><th>proof</th><th>old→new</th><th>ver</th><th>核证</th></tr></thead>
+          <tbody><tr v-for="p in proofs" :key="p.proof_id"><td class="muted">{{p.proof_id}}</td><td>{{p.old_key}}→<span class="ok">{{p.new_key}}</span></td><td>{{p.map_version}}</td><td :class="p.verified?'ok':'bad'">{{p.verified?'通过':'异常'}}</td></tr></tbody></table>
         </div>
       </div>
     </div>
